@@ -1,0 +1,7 @@
+streamlit==1.31.1
+pandas==2.2.0
+plotly==5.19.0
+sqlalchemy==1.4.51
+psycopg2-binary==2.9.9
+extra-streamlit-components==0.1.71
+xlsxwriter==3.1.9
