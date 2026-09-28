@@ -1,0 +1,8 @@
+streamlit>=1.64
+pandas>=2.2
+numpy>=1.26
+plotly>=5.20
+SQLAlchemy>=2.0
+psycopg[binary]>=3.2
+extra-streamlit-components>=0.1.71
+openpyxl>=3.1
