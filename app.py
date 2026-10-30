@@ -57,6 +57,9 @@ ctx = {"periodo": None, "ano": date.today().year}
 with st.sidebar:
     st.markdown("### 💰 Finanças")
     st.caption(f"👤 {st.secrets['admin_user']}")
+    if auth.usando_senha_em_texto():
+        st.warning("A senha ainda está em texto nos secrets. Troque por `admin_password_hash` "
+                   "(veja o README).", icon="🔐")
     menu = st.radio("Menu", list(PAGINAS), key="nav_menu", label_visibility="collapsed")
     filtro = PAGINAS[menu][1]
     if filtro == "periodo":

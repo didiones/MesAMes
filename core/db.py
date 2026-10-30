@@ -68,6 +68,30 @@ def engine():
 
 # =========================================================== migrações versionadas
 MIGRACOES = [
+    (0, "Tabelas base (banco novo)", [
+        """CREATE TABLE IF NOT EXISTS formas_pagamento (
+            id SERIAL PRIMARY KEY,
+            nome VARCHAR NOT NULL,
+            e_cartao BOOLEAN NOT NULL DEFAULT FALSE
+        )""",
+        """CREATE TABLE IF NOT EXISTS categorias (
+            id SERIAL PRIMARY KEY,
+            grupo VARCHAR NOT NULL,
+            nome VARCHAR NOT NULL,
+            tipo VARCHAR NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS transacoes (
+            id SERIAL PRIMARY KEY,
+            data DATE NOT NULL,
+            descricao VARCHAR,
+            valor NUMERIC(12,2) NOT NULL,
+            categoria_id INTEGER NOT NULL REFERENCES categorias(id),
+            tipo VARCHAR NOT NULL,
+            pago BOOLEAN NOT NULL DEFAULT FALSE,
+            forma_pagamento_id INTEGER REFERENCES formas_pagamento(id),
+            cartao VARCHAR
+        )""",
+    ]),
     (1, "Colunas de parcelamento, cor e ícone", [
         "ALTER TABLE transacoes ADD COLUMN IF NOT EXISTS parcela_atual INTEGER",
         "ALTER TABLE transacoes ADD COLUMN IF NOT EXISTS parcela_total INTEGER",
@@ -363,14 +387,70 @@ def exportar_backup() -> bytes:
     return buf.getvalue()
 
 
-def restaurar_backup(arquivo) -> None:
-    xls = pd.ExcelFile(arquivo)
+# colunas mínimas que cada aba do backup precisa ter
+COLUNAS_OBRIGATORIAS = {
+    "formas_pagamento": {"id", "nome"},
+    "categorias": {"id", "grupo", "nome", "tipo"},
+    "transacoes": {"id", "data", "valor", "categoria_id", "tipo"},
+    "cartoes": {"id", "nome", "dia_fechamento", "dia_vencimento"},
+    "recorrencias": {"id", "descricao", "valor", "categoria_id", "tipo", "dia", "inicio"},
+}
+ABAS_OBRIGATORIAS = ["formas_pagamento", "categorias", "transacoes"]
+
+
+def validar_backup(arquivo) -> tuple[dict[str, pd.DataFrame], list[str]]:
+    """Lê o Excel e confere abas e colunas contra o banco. Retorna (dados, erros)."""
+    try:
+        xls = pd.ExcelFile(arquivo)
+    except Exception as e:
+        return {}, [f"O arquivo não é um Excel válido ({e})."]
+    erros = [f"Falta a aba '{t}'." for t in ABAS_OBRIGATORIAS if t not in xls.sheet_names]
+    if erros:
+        return {}, erros
+    with engine().connect() as conn:
+        colunas_banco = {
+            t: {r[0] for r in conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = :t"), {"t": t})}
+            for t in TABELAS_BACKUP
+        }
+    dados = {}
+    for t in TABELAS_BACKUP:
+        if t not in xls.sheet_names:
+            continue
+        df = pd.read_excel(xls, t)
+        faltando = COLUNAS_OBRIGATORIAS[t] - set(df.columns)
+        if faltando:
+            erros.append(f"Aba '{t}': faltam as colunas {', '.join(sorted(faltando))}.")
+            continue
+        estranhas = set(df.columns) - colunas_banco[t]
+        if estranhas:
+            erros.append(f"Aba '{t}': colunas que não existem no banco: {', '.join(sorted(estranhas))}.")
+            continue
+        if df["id"].isna().any() or df["id"].duplicated().any():
+            erros.append(f"Aba '{t}': há IDs vazios ou repetidos.")
+            continue
+        dados[t] = df
+    if not erros:
+        cats, fps = set(dados["categorias"]["id"]), set(dados["formas_pagamento"]["id"])
+        tr = dados["transacoes"]
+        orfas = int((~tr["categoria_id"].isin(cats)).sum())
+        if orfas:
+            erros.append(f"{orfas} lançamento(s) apontam para categorias que não estão no arquivo.")
+        if "forma_pagamento_id" in tr:
+            sem_fp = int((tr["forma_pagamento_id"].notna() & ~tr["forma_pagamento_id"].isin(fps)).sum())
+            if sem_fp:
+                erros.append(f"{sem_fp} lançamento(s) apontam para formas de pagamento que não estão no arquivo.")
+    return dados, erros
+
+
+def restaurar_backup(dados: dict[str, pd.DataFrame]) -> None:
+    """Substitui tudo pelos dados validados, numa única transação (se falhar, nada muda)."""
     with engine().begin() as conn:
         for t in reversed(TABELAS_BACKUP):
             conn.execute(text(f"DELETE FROM {t}"))
         for t in TABELAS_BACKUP:
-            if t in xls.sheet_names:  # backups antigos não têm cartoes/recorrencias
-                pd.read_excel(xls, t).to_sql(t, conn, if_exists="append", index=False)
+            if t in dados:
+                dados[t].to_sql(t, conn, if_exists="append", index=False)
             conn.execute(text(
                 f"SELECT setval(pg_get_serial_sequence('{t}', 'id'), COALESCE((SELECT MAX(id) FROM {t}), 0) + 1, false)"))
     limpar_cache()

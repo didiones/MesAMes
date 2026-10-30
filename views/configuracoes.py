@@ -85,22 +85,67 @@ def render(ctx):
             st.caption("Mudar os dias não altera compras já lançadas.")
 
     with aba_bkp:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**Exportar**")
-            st.caption("Todas as tabelas em um arquivo Excel.")
-            if st.button("Gerar backup"):
-                st.session_state["bkp_bytes"] = db.exportar_backup()
-            if "bkp_bytes" in st.session_state:
-                st.download_button("⬇️ Baixar .xlsx", st.session_state["bkp_bytes"], f"backup_{date.today()}.xlsx",
-                                   type="primary")
-        with c2:
-            st.markdown("**Restaurar**")
-            st.caption("Substitui todos os dados atuais pelos do arquivo.")
-            up = st.file_uploader("Arquivo de backup", type=["xlsx"], label_visibility="collapsed")
-            if up and st.button("⚠️ Restaurar dados"):
-                try:
-                    db.restaurar_backup(up)
-                    ui.concluir("Dados restaurados.")
-                except Exception as e:
-                    st.error(f"Não foi possível restaurar: {e}")
+        _backup()
+
+
+def _backup():
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Exportar**")
+        st.caption("Todas as tabelas em um arquivo Excel.")
+        if st.button("Gerar backup"):
+            st.session_state["bkp_bytes"] = db.exportar_backup()
+        if "bkp_bytes" in st.session_state:
+            st.download_button("⬇️ Baixar .xlsx", st.session_state["bkp_bytes"], f"backup_{date.today()}.xlsx",
+                               type="primary")
+        if "bkp_auto" in st.session_state:
+            st.divider()
+            st.caption("Cópia automática feita antes da última restauração:")
+            st.download_button("⬇️ Baixar cópia anterior à restauração", st.session_state["bkp_auto"],
+                               f"antes_da_restauracao_{date.today()}.xlsx")
+    with c2:
+        st.markdown("**Restaurar**")
+        st.caption("Substitui todos os dados atuais pelos do arquivo. Antes, o app confere o arquivo "
+                   "e guarda uma cópia do que existe hoje.")
+        versao = st.session_state.setdefault("rest_versao", 0)
+        up = st.file_uploader("Arquivo de backup", type=["xlsx"], label_visibility="collapsed",
+                              key=f"rest_arquivo_{versao}")
+        if up and st.button("Verificar arquivo"):
+            dados, erros = db.validar_backup(up)
+            if erros:
+                st.error("O arquivo não pode ser restaurado:\n\n" + "\n".join(f"- {e}" for e in erros))
+            else:
+                st.session_state["_restauracao_pendente"] = dados
+                st.rerun()
+    if "_restauracao_pendente" in st.session_state:
+        _confirmar_restauracao()
+
+
+def _cancelar_restauracao():
+    st.session_state.pop("_restauracao_pendente", None)
+
+
+@st.dialog("Restaurar backup?", on_dismiss=_cancelar_restauracao)
+def _confirmar_restauracao():
+    dados = st.session_state["_restauracao_pendente"]
+    st.write("O arquivo foi verificado e contém:")
+    nomes = {"formas_pagamento": "formas de pagamento", "categorias": "categorias", "transacoes": "lançamentos",
+             "cartoes": "cartões", "recorrencias": "recorrências"}
+    for t, df in dados.items():
+        st.markdown(f"- {len(df)} {nomes.get(t, t)}")
+    st.warning("Todos os dados atuais serão substituídos. Uma cópia deles ficará disponível para download.")
+    c1, c2 = st.columns(2)
+    if c1.button("Restaurar", type="primary", width="stretch"):
+        try:
+            st.session_state["bkp_auto"] = db.exportar_backup()  # cópia de segurança antes de apagar
+            db.restaurar_backup(dados)
+        except Exception as e:
+            _cancelar_restauracao()
+            st.error(f"A restauração falhou e nada foi alterado: {e}")
+            return
+        _cancelar_restauracao()
+        st.session_state["rest_versao"] += 1
+        ui.concluir("Dados restaurados. A cópia anterior está disponível na aba Backup.")
+    if c2.button("Cancelar", width="stretch"):
+        _cancelar_restauracao()
+        st.rerun()

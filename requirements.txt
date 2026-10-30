@@ -6,3 +6,4 @@ SQLAlchemy>=2.0
 psycopg[binary]>=3.2
 extra-streamlit-components>=0.1.71
 openpyxl>=3.1
+bcrypt>=4.1
