@@ -111,11 +111,12 @@ def _backup():
         up = st.file_uploader("Arquivo de backup", type=["xlsx"], label_visibility="collapsed",
                               key=f"rest_arquivo_{versao}")
         if up and st.button("Verificar arquivo"):
-            dados, erros = db.validar_backup(up)
+            dados, erros, avisos = db.validar_backup(up)
             if erros:
                 st.error("O arquivo não pode ser restaurado:\n\n" + "\n".join(f"- {e}" for e in erros))
             else:
                 st.session_state["_restauracao_pendente"] = dados
+                st.session_state["_restauracao_avisos"] = avisos
                 st.rerun()
     if "_restauracao_pendente" in st.session_state:
         _confirmar_restauracao()
@@ -123,6 +124,7 @@ def _backup():
 
 def _cancelar_restauracao():
     st.session_state.pop("_restauracao_pendente", None)
+    st.session_state.pop("_restauracao_avisos", None)
 
 
 @st.dialog("Restaurar backup?", on_dismiss=_cancelar_restauracao)
@@ -133,6 +135,8 @@ def _confirmar_restauracao():
              "cartoes": "cartões", "recorrencias": "recorrências"}
     for t, df in dados.items():
         st.markdown(f"- {len(df)} {nomes.get(t, t)}")
+    for aviso in st.session_state.get("_restauracao_avisos", []):
+        st.caption(f"ℹ️ {aviso}")
     st.warning("Todos os dados atuais serão substituídos. Uma cópia deles ficará disponível para download.")
     c1, c2 = st.columns(2)
     if c1.button("Restaurar", type="primary", width="stretch"):

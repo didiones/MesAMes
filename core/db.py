@@ -398,15 +398,20 @@ COLUNAS_OBRIGATORIAS = {
 ABAS_OBRIGATORIAS = ["formas_pagamento", "categorias", "transacoes"]
 
 
-def validar_backup(arquivo) -> tuple[dict[str, pd.DataFrame], list[str]]:
-    """Lê o Excel e confere abas e colunas contra o banco. Retorna (dados, erros)."""
+def validar_backup(arquivo) -> tuple[dict[str, pd.DataFrame], list[str], list[str]]:
+    """Lê o Excel e confere abas e colunas contra o banco. Retorna (dados, erros, avisos).
+
+    Colunas que não existem no banco são descartadas se estiverem totalmente vazias
+    (sobras de versões antigas); se tiverem algum valor, a restauração é bloqueada.
+    """
+    avisos: list[str] = []
     try:
         xls = pd.ExcelFile(arquivo)
     except Exception as e:
-        return {}, [f"O arquivo não é um Excel válido ({e})."]
+        return {}, [f"O arquivo não é um Excel válido ({e})."], avisos
     erros = [f"Falta a aba '{t}'." for t in ABAS_OBRIGATORIAS if t not in xls.sheet_names]
     if erros:
-        return {}, erros
+        return {}, erros, avisos
     with engine().connect() as conn:
         colunas_banco = {
             t: {r[0] for r in conn.execute(text(
@@ -423,8 +428,14 @@ def validar_backup(arquivo) -> tuple[dict[str, pd.DataFrame], list[str]]:
             erros.append(f"Aba '{t}': faltam as colunas {', '.join(sorted(faltando))}.")
             continue
         estranhas = set(df.columns) - colunas_banco[t]
-        if estranhas:
-            erros.append(f"Aba '{t}': colunas que não existem no banco: {', '.join(sorted(estranhas))}.")
+        vazias = sorted(c for c in estranhas if df[c].isna().all())
+        if vazias:
+            df = df.drop(columns=vazias)
+            avisos.append(f"Aba '{t}': coluna(s) antiga(s) e vazia(s) ignorada(s): {', '.join(vazias)}.")
+        com_dados = sorted(estranhas - set(vazias))
+        if com_dados:
+            erros.append(f"Aba '{t}': colunas com dados que não existem no banco: {', '.join(com_dados)}. "
+                         "Restaurar perderia essas informações.")
             continue
         if df["id"].isna().any() or df["id"].duplicated().any():
             erros.append(f"Aba '{t}': há IDs vazios ou repetidos.")
@@ -440,7 +451,7 @@ def validar_backup(arquivo) -> tuple[dict[str, pd.DataFrame], list[str]]:
             sem_fp = int((tr["forma_pagamento_id"].notna() & ~tr["forma_pagamento_id"].isin(fps)).sum())
             if sem_fp:
                 erros.append(f"{sem_fp} lançamento(s) apontam para formas de pagamento que não estão no arquivo.")
-    return dados, erros
+    return dados, erros, avisos
 
 
 def restaurar_backup(dados: dict[str, pd.DataFrame]) -> None:
